@@ -1,0 +1,7 @@
+{
+  "dependencies": {
+    "geojson2h3": "^1.2.0",
+    "sqlite": "^4.0.23",
+    "sqlite3": "^5.0.2"
+  }
+}

@@ -1,0 +1,9 @@
+CREATE TABLE dggs."srtm_30m_estonia_h3" (
+        "cell_id"       TEXT,
+        "elevation"     REAL NOT NULL,
+        "resolution"    INTEGER NOT NULL,
+        "parent_ids"    TEXT,
+        "elevation_count"       INTEGER,
+        "elevation_std" REAL,
+        PRIMARY KEY("cell_id")
+);
