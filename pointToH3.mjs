@@ -5,14 +5,21 @@ import { geoToH3 } from 'h3-js'
 // import { h3SetToFeatureCollection } from 'geojson2h3'
 sqlite3.verbose()
 
+function numberFormat(num) {
+  if (num < 10) {
+    return '0' + num
+  } else return num
+}
+
 async function mainApp() {
   // conlsole arguments
   const args = process.argv.slice(2)
+  const geoJsonFile = args[0]
 
   // get features form geoJSON
   var features = null
   try {
-    const data = fs.readFileSync('./files/data.geojson', 'utf8')
+    const data = fs.readFileSync('./files/' + geoJsonFile, 'utf8')
     // parse JSON string to JSON object
     const dataJSON = JSON.parse(data)
     features = dataJSON.features
@@ -20,16 +27,52 @@ async function mainApp() {
     console.log(`Error reading file from disk: ${err}`)
   }
 
-  const hexagons = features.map((feature) => {
-    let long = feature.geometry.coordinates[0]
-    let lat = feature.geometry.coordinates[1]
-    let h3Index = geoToH3(lat, long, 5)
-    let hexagon = { H3INDEX: h3Index }
-    Object.entries(feature.properties).forEach(([key, value]) => {
-      hexagon[key] = value
+  // start resolution
+  var resolution = 1
+  // array of all H3 indexes
+  var h3IndexesArray = []
+  // array of uniq H3 indexes
+  var h3IndexesArrayUnique = []
+  do {
+    h3IndexesArray = []
+    // array of H3 indexes with attributes
+    var hexagons = features.map((feature) => {
+      let long = feature.geometry.coordinates[0]
+      let lat = feature.geometry.coordinates[1]
+      let h3Index = geoToH3(lat, long, resolution)
+      h3IndexesArray.push(h3Index)
+      let hexagon = { H3INDEX: h3Index }
+      Object.entries(feature.properties).forEach(([key, value]) => {
+        hexagon[key] = value
+      })
+      return hexagon
     })
-    return hexagon
-  })
+
+    // let h3IndexesArrayUniqueNew = Array.from(new Set(h3IndexesArray))
+
+    // if (h3IndexesArrayUniqueNew.length !== h3IndexesArrayUnique.length) {
+    //   h3IndexesArrayUnique = Array.from(new Set(h3IndexesArray))
+    //   resolution++
+    // } else return
+
+    h3IndexesArrayUnique = Array.from(new Set(h3IndexesArray))
+
+    console.log(
+      'level: ' +
+        numberFormat(resolution) +
+        ' | all: ' +
+        h3IndexesArray.length +
+        ' | uniq: ' +
+        h3IndexesArrayUnique.length
+    )
+
+    resolution++
+
+    // console.log(hexagons[hexagons.length - 1].H3INDEX)
+  } while (
+    !(h3IndexesArray.length === h3IndexesArrayUnique.length) &&
+    resolution <= 15
+  )
 
   // convert H3 indexes to geoJSON features
   // ===========================================================
@@ -88,6 +131,8 @@ async function mainApp() {
     filename: './databases/dggs.db',
     driver: sqlite3.Database,
   })
+  console.log('Started recording to database')
+  console.log('...')
 
   // remove table if exists
   await db.run('DROP TABLE IF EXISTS groups')
@@ -96,42 +141,43 @@ async function mainApp() {
   await db.run(`CREATE TABLE groups(${tableFieldsTypesString})`)
 
   // insert data to table
-  hexagons.forEach((hex) => {
-    let hexValues = []
-    Object.entries(hex).forEach(([key, value]) => {
-      let valueText = null
-      if (value === null) {
-        valueText = 'null'
-      } else {
-        if (typeof value === 'string') {
-          valueText = '"' + value + '"'
-        } else valueText = value
-      }
-      hexValues.push(valueText)
-    })
-    var hexValuesString = hexValues.join(', ')
-    var sql = `INSERT INTO groups (${tableFieldsNamesString}) VALUES (${hexValuesString})`
-    db.run(sql, [], function (err) {
-      if (err) {
-        return console.error(err.message)
-      }
-      console.log(`Rows inserted ${this.changes}`)
-    })
-  })
+  // hexagons.forEach((hex) => {
+  //   let hexValues = []
+  //   Object.entries(hex).forEach(([key, value]) => {
+  //     let valueText = null
+  //     if (value === null) {
+  //       valueText = 'null'
+  //     } else {
+  //       if (typeof value === 'string') {
+  //         valueText = '"' + value + '"'
+  //       } else valueText = value
+  //     }
+  //     hexValues.push(valueText)
+  //   })
+  //   var hexValuesString = hexValues.join(', ')
+  //   var sql = `INSERT INTO groups (${tableFieldsNamesString}) VALUES (${hexValuesString})`
+  //   db.run(sql, [], function (err) {
+  //     if (err) {
+  //       return console.error(err.message)
+  //     }
+  //     console.log(`Rows inserted ${this.changes}`)
+  //   })
+  // })
 
   // query data to check
-  let query2 = `SELECT rowid, H3INDEX, LATITUDE, LONGITUDE, YEAR FROM groups`
-  await db.each(query2, [], (err, row) => {
-    if (err) {
-      throw err
-    }
-    console.log(
-      `${row.rowid} ${row.H3INDEX} ${row.YEAR} ${row.LATITUDE} ${row.LONGITUDE} `
-    )
-  })
+  // let query2 = `SELECT rowid, H3INDEX, LATITUDE, LONGITUDE, YEAR FROM groups`
+  // await db.each(query2, [], (err, row) => {
+  //   if (err) {
+  //     throw err
+  //   }
+  //   console.log(
+  //     `${row.rowid} ${row.H3INDEX} ${row.YEAR} ${row.LATITUDE} ${row.LONGITUDE} `
+  //   )
+  // })
 
   // close db connection
   await db.close()
+  console.log('Finished recording to database')
 }
 
 // run app
