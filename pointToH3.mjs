@@ -2,29 +2,53 @@ import fs from 'fs'
 import sqlite3 from 'sqlite3'
 import { open } from 'sqlite'
 import { geoToH3 } from 'h3-js'
-// import { h3SetToFeatureCollection } from 'geojson2h3'
+import { h3SetToFeatureCollection } from 'geojson2h3'
 sqlite3.verbose()
 
+// formatting numbers to string ("02")
 function numberFormat(num) {
   if (num < 10) {
     return '0' + num
-  } else return num
+  } else return '' + num
 }
 
 async function mainApp() {
   // conlsole arguments
   const args = process.argv.slice(2)
-  const geoJsonFile = args[0]
+  const inComeFilename = args[0] + '.geojson'
 
   // get features form geoJSON
   var features = null
   try {
-    const data = fs.readFileSync('./files/' + geoJsonFile, 'utf8')
+    const data = fs.readFileSync(
+      './files/geoJsonToConvert/' + inComeFilename,
+      'utf8'
+    )
     // parse JSON string to JSON object
     const dataJSON = JSON.parse(data)
     features = dataJSON.features
+    const crs = dataJSON.crs
   } catch (err) {
     console.log(`Error reading file from disk: ${err}`)
+  }
+
+  // verification features for coordinates duplicates
+  const coordinatesString = features.map((feature) => {
+    let long = feature.geometry.coordinates[0]
+    let lat = feature.geometry.coordinates[1]
+    let coord = '' + long + lat
+    return coord
+  })
+  const coordinatesStringUniq = Array.from(new Set(coordinatesString))
+  if (coordinatesString.length !== coordinatesStringUniq.length) {
+    let differences = coordinatesString.length - coordinatesStringUniq.length
+    console.log('--------------------------------------------------------')
+    console.log(
+      'There are ' +
+        differences +
+        ' points with the same coordiantes in dataset'
+    )
+    console.log('--------------------------------------------------------')
   }
 
   // start resolution
@@ -48,13 +72,6 @@ async function mainApp() {
       return hexagon
     })
 
-    // let h3IndexesArrayUniqueNew = Array.from(new Set(h3IndexesArray))
-
-    // if (h3IndexesArrayUniqueNew.length !== h3IndexesArrayUnique.length) {
-    //   h3IndexesArrayUnique = Array.from(new Set(h3IndexesArray))
-    //   resolution++
-    // } else return
-
     h3IndexesArrayUnique = Array.from(new Set(h3IndexesArray))
 
     console.log(
@@ -67,24 +84,26 @@ async function mainApp() {
     )
 
     resolution++
-
-    // console.log(hexagons[hexagons.length - 1].H3INDEX)
   } while (
     !(h3IndexesArray.length === h3IndexesArrayUnique.length) &&
     resolution <= 15
   )
 
   // convert H3 indexes to geoJSON features
-  // ===========================================================
-  // const filename = args[0]
-  // const filePath = './files/' + filename + '.geojson'
-  // let hexIDs = hexagons.map((item) => item.id)
-  // let geoFeatures = h3SetToFeatureCollection(hexIDs)
-  // fs.writeFile(filePath, JSON.stringify(geoFeatures), function (err) {
-  //   if (err) {
-  //     return console.log(err)
-  //   }
-  // })
+
+  if (args[1]) {
+    const outComeFilename = args[1] + '.geojson'
+    const filePath = './files/resultGeojson/' + outComeFilename
+    let geoFeatures = h3SetToFeatureCollection(h3IndexesArray)
+    fs.writeFile(filePath, JSON.stringify(geoFeatures), function (err) {
+      if (err) {
+        return console.log(err)
+      }
+    })
+    console.log('--------------------------------------------------------')
+    console.log('File ' + outComeFilename + ' created successfully')
+    console.log('--------------------------------------------------------')
+  }
 
   // define fields names and types for sqlite table
   const hexFirst = hexagons[0]
