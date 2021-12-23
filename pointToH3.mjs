@@ -147,7 +147,7 @@ async function mainApp() {
 
   // db connection
   const db = await open({
-    filename: './databases/dggs.db',
+    filename: './db/dggs.db',
     driver: sqlite3.Database,
   })
   console.log('Started recording to database')
