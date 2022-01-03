@@ -2,6 +2,9 @@
   "dependencies": {
     "geojson2h3": "^1.2.0",
     "h3-js": "^3.7.2",
+    "lodash.filter": "^4.6.0",
+    "lodash.maxby": "^4.6.0",
+    "lodash.minby": "^4.6.0",
     "sqlite": "^4.0.23",
     "sqlite3": "^5.0.2"
   }
