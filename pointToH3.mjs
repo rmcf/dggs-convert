@@ -2,7 +2,7 @@ import fs from 'fs'
 import sqlite3 from 'sqlite3'
 import { open } from 'sqlite'
 import { geoToH3 } from 'h3-js'
-import { h3SetToFeatureCollection } from 'geojson2h3'
+import { h3SetToFeatureCollection, h3ToFeature } from 'geojson2h3'
 import maxBy from 'lodash.maxby'
 import minBy from 'lodash.minby'
 import filter from 'lodash.filter'
@@ -20,26 +20,92 @@ function transformLog(level, allHex, uniqHex) {
   console.log('level: ' + level + ' | all: ' + allHex + ' | uniq: ' + uniqHex)
 }
 
+// convert geoJSON features to H3 array
+function geoJsonFeaturesToH3(features, resolution, attributes) {
+  let h3IndexesArray = []
+  let hexagons = features.map((feature) => {
+    let long = feature.geometry.coordinates[0]
+    let lat = feature.geometry.coordinates[1]
+    let h3Index = geoToH3(lat, long, resolution)
+    h3IndexesArray.push(h3Index)
+    let hexagon = { H3INDEX: h3Index }
+    if (attributes === 1) {
+      Object.entries(feature.properties).forEach(([key, value]) => {
+        hexagon[key] = value
+      })
+    }
+    return hexagon
+  })
+  let h3IndexesArrayUnique = Array.from(new Set(h3IndexesArray))
+  // logging result
+  transformLog(
+    numberFormat(resolution),
+    h3IndexesArray.length,
+    h3IndexesArrayUnique.length
+  )
+  return {
+    hex: hexagons,
+    hexAllQuantity: h3IndexesArray.length,
+    hexUniqQuantity: h3IndexesArrayUnique.length,
+  }
+}
+
+// selection lowest resolution among highest hexs quantity
+function optimalResolution(array) {
+  const maxUniqHexQuantity = maxBy(array, 'uniqhexs')
+  const maxUiqHexs = filter(array, ['uniqhexs', maxUniqHexQuantity.uniqhexs])
+  const minResolutionLevel = minBy(maxUiqHexs, 'level')
+  return minResolutionLevel.level
+}
+
+// save H3 indexes as hexagons with attributes to geojson
+function h3toGeoJsonAttributes(indexes) {
+  let hexagons = []
+  indexes.forEach((index) => {
+    // vector hexagon on the map
+    let hexagon = h3ToFeature(index.H3INDEX)
+    // assign all attributes of featureFromAPI to vector hexagon
+    Object.entries(index).forEach((entry) => {
+      const [key, value] = entry
+      if (key !== 'H3INDEX') {
+        hexagon.properties[key] = value
+      }
+    })
+    hexagons.push(hexagon)
+  })
+  let geoJsonObject = {
+    type: 'FeatureCollection',
+    features: hexagons,
+  }
+  const filePath = './files/resultGeojson/' + outComeFilename()
+  fs.writeFile(filePath, JSON.stringify(geoJsonObject), function (err) {
+    if (err) {
+      return console.log(err)
+    }
+  })
+}
+
+// conlsole arguments
+const args = process.argv.slice(2)
+const inComeFilename = args[0]
+const inComeResolution = () => {
+  if (args[1] !== undefined) {
+    return args[1]
+  } else {
+    return null
+  }
+}
+const outComeFilename = () => {
+  if (args[2] !== undefined) {
+    return args[2]
+  } else {
+    return null
+  }
+}
+
 // main function
 async function mainApp() {
   console.time('time')
-  // conlsole arguments
-  const args = process.argv.slice(2)
-  const inComeFilename = args[0]
-  const inComeResolution = () => {
-    if (args[1] !== undefined) {
-      return args[1]
-    } else {
-      return null
-    }
-  }
-  const outComeFilename = () => {
-    if (args[2] !== undefined) {
-      return args[2]
-    } else {
-      return null
-    }
-  }
 
   // get features form geoJSON
   var features = null
@@ -66,116 +132,44 @@ async function mainApp() {
   const coordinatesStringUniq = Array.from(new Set(coordinatesString))
   if (coordinatesString.length !== coordinatesStringUniq.length) {
     let differences = coordinatesString.length - coordinatesStringUniq.length
-    console.log('--------------------------------------------------------')
+    console.log('-------------------------------------')
     console.log(
       'There are ' +
         differences +
         ' points with the same coordiantes in dataset'
     )
-    console.log('--------------------------------------------------------')
+    console.log('-------------------------------------')
   }
 
   // array of H3 indexes with attributes
   var hexagons = null
-
   if (inComeResolution()) {
-    var h3IndexesArray = []
-    hexagons = features.map((feature) => {
-      let long = feature.geometry.coordinates[0]
-      let lat = feature.geometry.coordinates[1]
-      let h3Index = geoToH3(lat, long, inComeResolution())
-      h3IndexesArray.push(h3Index)
-      let hexagon = { H3INDEX: h3Index }
-      Object.entries(feature.properties).forEach(([key, value]) => {
-        hexagon[key] = value
-      })
-      return hexagon
-    })
-    // array of uniq H3 indexes
-    var h3IndexesArrayUnique = Array.from(new Set(h3IndexesArray))
-    // logging result
-    transformLog(
-      numberFormat(inComeResolution()),
-      h3IndexesArray.length,
-      h3IndexesArrayUnique.length
-    )
+    let resolution = inComeResolution()
+    hexagons = geoJsonFeaturesToH3(features, resolution, 1).hex
   } else {
-    // start resolution
-    var resolution = 1
-    // array of all H3 indexes
-    var h3IndexesArray = []
-    // array of uniq H3 indexes
-    var h3IndexesArrayUnique = []
-    // hexagon quantity at each resolution level
-    var uniqHexAtLevel = []
+    var startResolution = 1
+    var conversionResult = {} // result of conversion function
+    var uniqHexAtLevel = [] // hexagon quantity at each resolution level
     do {
-      h3IndexesArray = []
-      hexagons = features.map((feature) => {
-        let long = feature.geometry.coordinates[0]
-        let lat = feature.geometry.coordinates[1]
-        let h3Index = geoToH3(lat, long, resolution)
-        h3IndexesArray.push(h3Index)
-        let hexagon = { H3INDEX: h3Index }
-        return hexagon
-      })
-      h3IndexesArrayUnique = Array.from(new Set(h3IndexesArray))
-      // logging result
-      transformLog(
-        numberFormat(resolution),
-        h3IndexesArray.length,
-        h3IndexesArrayUnique.length
-      )
+      conversionResult = geoJsonFeaturesToH3(features, startResolution, 0)
       uniqHexAtLevel.push({
-        level: resolution,
-        uniqhexs: h3IndexesArrayUnique.length,
+        level: startResolution,
+        uniqhexs: conversionResult.hexUniqQuantity,
       })
-      resolution++
+      startResolution++
     } while (
-      !(h3IndexesArray.length === h3IndexesArrayUnique.length) &&
-      resolution <= 15
+      !(conversionResult.hexAllQuantity === conversionResult.hexUniqQuantity) &&
+      startResolution <= 15
     )
-    // selection lowest resolution among highest hex quantity (optimal)
-    const maxUniqHexQuantity = maxBy(uniqHexAtLevel, 'uniqhexs')
-    const maxUiqHexs = filter(uniqHexAtLevel, [
-      'uniqhexs',
-      maxUniqHexQuantity.uniqhexs,
-    ])
-    const minLevelMaxHexQuantity = minBy(maxUiqHexs, 'level')
-    var h3IndexesArrayOpt = []
-    var h3IndexesArrayUniqueOpt = []
-    hexagons = features.map((feature) => {
-      let long = feature.geometry.coordinates[0]
-      let lat = feature.geometry.coordinates[1]
-      let h3Index = geoToH3(lat, long, minLevelMaxHexQuantity.level)
-      h3IndexesArrayOpt.push(h3Index)
-      let hexagon = { H3INDEX: h3Index }
-      Object.entries(feature.properties).forEach(([key, value]) => {
-        hexagon[key] = value
-      })
-      return hexagon
-    })
-    h3IndexesArrayUniqueOpt = Array.from(new Set(h3IndexesArrayOpt))
+    const optResolution = optimalResolution(uniqHexAtLevel)
+    console.log('-------------------------------------')
     console.log('Optimal resolution:')
-    // logging result
-    transformLog(
-      minLevelMaxHexQuantity.level,
-      h3IndexesArrayOpt.length,
-      h3IndexesArrayUniqueOpt.length
-    )
+    hexagons = geoJsonFeaturesToH3(features, optResolution, 1).hex
   }
 
   // convert H3 indexes to geoJSON features
   if (outComeFilename()) {
-    const filePath = './files/resultGeojson/' + outComeFilename()
-    let geoFeatures = h3SetToFeatureCollection(h3IndexesArray)
-    fs.writeFile(filePath, JSON.stringify(geoFeatures), function (err) {
-      if (err) {
-        return console.log(err)
-      }
-    })
-    console.log('--------------------------------------------------------')
-    console.log('File ' + outComeFilename() + ' created successfully')
-    console.log('--------------------------------------------------------')
+    h3toGeoJsonAttributes(hexagons)
   }
 
   // define fields names and types for sqlite table
