@@ -1,89 +1,16 @@
 import fs from 'fs'
+import StreamArray from 'stream-json/streamers/StreamArray.js'
+import Pick from 'stream-json/filters/Pick.js'
+import batch from 'stream-json/utils/Batch.js'
+import chain from 'stream-chain'
 import sqlite3 from 'sqlite3'
 import { open } from 'sqlite'
 import { geoToH3 } from 'h3-js'
-import { h3SetToFeatureCollection, h3ToFeature } from 'geojson2h3'
+import { h3ToFeature } from 'geojson2h3'
 import maxBy from 'lodash.maxby'
 import minBy from 'lodash.minby'
 import filter from 'lodash.filter'
 sqlite3.verbose()
-
-// formatting numbers to string ("02")
-function numberFormat(num) {
-  if (num < 10) {
-    return '0' + num
-  } else return '' + num
-}
-
-// log results of transformation
-function transformLog(level, allHex, uniqHex) {
-  console.log('level: ' + level + ' | all: ' + allHex + ' | uniq: ' + uniqHex)
-}
-
-// convert geoJSON features to H3 array
-function geoJsonFeaturesToH3(features, resolution, attributes) {
-  let h3IndexesArray = []
-  let hexagons = features.map((feature) => {
-    let long = feature.geometry.coordinates[0]
-    let lat = feature.geometry.coordinates[1]
-    let h3Index = geoToH3(lat, long, resolution)
-    h3IndexesArray.push(h3Index)
-    let hexagon = { H3INDEX: h3Index }
-    if (attributes === 1) {
-      Object.entries(feature.properties).forEach(([key, value]) => {
-        hexagon[key] = value
-      })
-    }
-    return hexagon
-  })
-  let h3IndexesArrayUnique = Array.from(new Set(h3IndexesArray))
-  // logging result
-  transformLog(
-    numberFormat(resolution),
-    h3IndexesArray.length,
-    h3IndexesArrayUnique.length
-  )
-  return {
-    hex: hexagons,
-    hexAllQuantity: h3IndexesArray.length,
-    hexUniqQuantity: h3IndexesArrayUnique.length,
-  }
-}
-
-// selection lowest resolution among highest hexs quantity
-function optimalResolution(array) {
-  const maxUniqHexQuantity = maxBy(array, 'uniqhexs')
-  const maxUiqHexs = filter(array, ['uniqhexs', maxUniqHexQuantity.uniqhexs])
-  const minResolutionLevel = minBy(maxUiqHexs, 'level')
-  return minResolutionLevel.level
-}
-
-// save H3 indexes as hexagons with attributes to geojson
-function h3toGeoJsonAttributes(indexes) {
-  let hexagons = []
-  indexes.forEach((index) => {
-    // vector hexagon on the map
-    let hexagon = h3ToFeature(index.H3INDEX)
-    // assign all attributes of featureFromAPI to vector hexagon
-    Object.entries(index).forEach((entry) => {
-      const [key, value] = entry
-      if (key !== 'H3INDEX') {
-        hexagon.properties[key] = value
-      }
-    })
-    hexagons.push(hexagon)
-  })
-  let geoJsonObject = {
-    type: 'FeatureCollection',
-    features: hexagons,
-  }
-  const filePath = './files/resultGeojson/' + outComeFilename()
-  fs.writeFile(filePath, JSON.stringify(geoJsonObject), function (err) {
-    if (err) {
-      return console.log(err)
-    }
-  })
-}
 
 // conlsole arguments
 const args = process.argv.slice(2)
@@ -107,39 +34,20 @@ const outComeFilename = () => {
 async function mainApp() {
   console.time('time')
 
-  // get features form geoJSON
+  // get features as JSON stream
+  getJsonStream(inComeFilename)
+
   var features = null
-  try {
-    const data = fs.readFileSync(
-      './files/geoJsonToConvert/' + inComeFilename,
-      'utf8'
-    )
-    // parse JSON string to JSON object
-    const dataJSON = JSON.parse(data)
-    features = dataJSON.features
-    const crs = dataJSON.crs
-  } catch (err) {
-    console.log(`Error reading file from disk: ${err}`)
+
+  // get features form geoJSON
+  // features = getJsonFile(inComeFilename)
+
+  if (!features) {
+    return
   }
 
   // verification features for coordinates duplicates
-  const coordinatesString = features.map((feature) => {
-    let long = feature.geometry.coordinates[0]
-    let lat = feature.geometry.coordinates[1]
-    let coord = '' + long + lat
-    return coord
-  })
-  const coordinatesStringUniq = Array.from(new Set(coordinatesString))
-  if (coordinatesString.length !== coordinatesStringUniq.length) {
-    let differences = coordinatesString.length - coordinatesStringUniq.length
-    console.log('-------------------------------------')
-    console.log(
-      'There are ' +
-        differences +
-        ' points with the same coordiantes in dataset'
-    )
-    console.log('-------------------------------------')
-  }
+  checkPointsTopology(features)
 
   // array of H3 indexes with attributes
   var hexagons = null
@@ -265,6 +173,145 @@ async function mainApp() {
   await db.close()
   console.log('Finished recording to database')
   console.timeEnd('time')
+}
+
+// helper functions
+// ====================================================================
+
+// formatting numbers to string: 2 => "02"
+function numberFormat(num) {
+  if (num < 10) {
+    return '0' + num
+  } else return '' + num
+}
+
+// log results of transformation
+function transformLog(level, allHex, uniqHex) {
+  console.log('level: ' + level + ' | all: ' + allHex + ' | uniq: ' + uniqHex)
+}
+
+// convert geoJSON features to H3 array
+function geoJsonFeaturesToH3(features, resolution, attributes) {
+  let h3IndexesArray = []
+  let hexagons = features.map((feature) => {
+    let long = feature.geometry.coordinates[0]
+    let lat = feature.geometry.coordinates[1]
+    let h3Index = geoToH3(lat, long, resolution)
+    h3IndexesArray.push(h3Index)
+    let hexagon = { H3INDEX: h3Index }
+    if (attributes === 1) {
+      Object.entries(feature.properties).forEach(([key, value]) => {
+        hexagon[key] = value
+      })
+    }
+    return hexagon
+  })
+  let h3IndexesArrayUnique = Array.from(new Set(h3IndexesArray))
+  // logging result
+  transformLog(
+    numberFormat(resolution),
+    h3IndexesArray.length,
+    h3IndexesArrayUnique.length
+  )
+  return {
+    hex: hexagons,
+    hexAllQuantity: h3IndexesArray.length,
+    hexUniqQuantity: h3IndexesArrayUnique.length,
+  }
+}
+
+// selection lowest resolution among highest hexs quantity
+function optimalResolution(array) {
+  const maxUniqHexQuantity = maxBy(array, 'uniqhexs')
+  const maxUiqHexs = filter(array, ['uniqhexs', maxUniqHexQuantity.uniqhexs])
+  const minResolutionLevel = minBy(maxUiqHexs, 'level')
+  return minResolutionLevel.level
+}
+
+// save H3 indexes as hexagons with attributes to geojson
+function h3toGeoJsonAttributes(indexes) {
+  let hexagons = []
+  indexes.forEach((index) => {
+    // vector hexagon on the map
+    let hexagon = h3ToFeature(index.H3INDEX)
+    // assign all attributes of featureFromAPI to vector hexagon
+    Object.entries(index).forEach((entry) => {
+      const [key, value] = entry
+      if (key !== 'H3INDEX') {
+        hexagon.properties[key] = value
+      }
+    })
+    hexagons.push(hexagon)
+  })
+  let geoJsonObject = {
+    type: 'FeatureCollection',
+    features: hexagons,
+  }
+  const filePath = './files/resultGeojson/' + outComeFilename()
+  fs.writeFile(filePath, JSON.stringify(geoJsonObject), function (err) {
+    if (err) {
+      return console.log(err)
+    }
+  })
+}
+
+// get features form geoJSON as stream
+function getJsonStream(file) {
+  console.log('Begin stream...')
+  const pipeline = new chain([
+    fs.createReadStream('./files/geoJsonToConvert/' + file),
+    Pick.withParser({ filter: 'features' }),
+    new StreamArray(),
+    new batch({ batchSize: 100000 }),
+  ])
+
+  pipeline.on('data', (data) => {
+    console.log(data.length)
+    console.log('Reading next chunk...')
+  })
+
+  pipeline.on('end', () => {
+    console.log('Completed')
+  })
+}
+
+// get features from geoJSON as file
+function getJsonFile(file) {
+  let features = null
+  try {
+    const data = fs.readFileSync(
+      './files/geoJsonToConvert/' + inComeFilename,
+      'utf8'
+    )
+    const dataJSON = JSON.parse(data)
+    features = dataJSON.features
+    const crs = dataJSON.crs
+    return features
+  } catch (err) {
+    console.log(`Error reading file from disk: ${err}`)
+    return null
+  }
+}
+
+// check points topology
+function checkPointsTopology(features) {
+  const coordinatesString = features.map((feature) => {
+    let long = feature.geometry.coordinates[0]
+    let lat = feature.geometry.coordinates[1]
+    let coord = '' + long + lat
+    return coord
+  })
+  const coordinatesStringUniq = Array.from(new Set(coordinatesString))
+  if (coordinatesString.length !== coordinatesStringUniq.length) {
+    let differences = coordinatesString.length - coordinatesStringUniq.length
+    console.log('-------------------------------------')
+    console.log(
+      'There are ' +
+        differences +
+        ' points with the same coordiantes in dataset'
+    )
+    console.log('-------------------------------------')
+  }
 }
 
 // run app

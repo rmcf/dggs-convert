@@ -6,6 +6,8 @@
     "lodash.maxby": "^4.6.0",
     "lodash.minby": "^4.6.0",
     "sqlite": "^4.0.23",
-    "sqlite3": "^5.0.2"
+    "sqlite3": "^5.0.2",
+    "stream-chain": "^2.2.4",
+    "stream-json": "^1.7.3"
   }
 }
