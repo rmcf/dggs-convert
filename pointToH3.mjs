@@ -6,7 +6,6 @@ import chain from 'stream-chain'
 import sqlite3 from 'sqlite3'
 import { open } from 'sqlite'
 import { geoToH3 } from 'h3-js'
-import { h3ToFeature } from 'geojson2h3'
 import maxBy from 'lodash.maxby'
 import minBy from 'lodash.minby'
 import filter from 'lodash.filter'
@@ -15,51 +14,222 @@ sqlite3.verbose()
 // conlsole arguments
 const args = process.argv.slice(2)
 const inComeFilename = args[0]
-const inComeResolution = () => {
-  if (args[1] !== undefined) {
-    return args[1]
-  } else {
-    return null
+const inComeResolution = consoleArgCheck(args[1])
+
+// files URLs relative
+const fileConvertUrl = './files/geoJsonToConvert/'
+const databaseUrl = './db/db7.db'
+
+// quantity of json objects per 1 chunk
+const meanBatchSizeDefine = 100000
+const meanBatchSizeInsert = 10000
+
+// read geoJSON as stream
+getJsonStream(
+  inComeFilename,
+  inComeResolution,
+  meanBatchSizeDefine,
+  meanBatchSizeInsert
+)
+
+// PURE FUNCTIONS
+// ====================================================================
+
+// get features form geoJSON as stream
+async function getJsonStream(
+  fileName,
+  resolution,
+  batchSizeDefine,
+  batchSizeInsert
+) {
+  console.log('Begin stream')
+  console.log('...')
+
+  var tableFieldsNamesString = null // DB table fields names
+  var tableFieldsTypesString = null // DB table fields types
+  var optResolution = 0
+
+  // Loop to DEFINE table types and names
+  const pipelineDefine = new chain([
+    fs.createReadStream(fileConvertUrl + fileName),
+    Pick.withParser({ filter: 'features' }),
+    new StreamArray(),
+    new batch({ batchSize: batchSizeDefine }),
+  ])
+  await pipelineDefine.on('data', (features) => {
+    checkPointsTopologyStream(features)
+    const hexagonsAndResolution = conversionStream(features, resolution)
+    const pipeHexagons = hexagonsAndResolution.hexagons
+    const pipeResolution = hexagonsAndResolution.optResolution
+    if (optResolution < pipeResolution) {
+      optResolution = pipeResolution
+    }
+    let DBfieldTypes = defineDBfieldTypes(pipeHexagons)
+    if (!tableFieldsNamesString) {
+      tableFieldsNamesString = DBfieldTypes.names
+    }
+    if (!tableFieldsTypesString) {
+      tableFieldsTypesString = DBfieldTypes.types
+    }
+  })
+  await pipelineDefine.on('finish', async () => {
+    const db = await open({
+      filename: databaseUrl,
+      driver: sqlite3.Database,
+    })
+    await db.run('DROP TABLE IF EXISTS groups')
+    await db.run(`CREATE TABLE groups(${tableFieldsTypesString})`)
+    await db.close()
+    console.log('Define completed with reslution: ' + optResolution)
+
+    // Loop to INSERT data into DB
+    const dbins = await open({
+      filename: databaseUrl,
+      driver: sqlite3.Database,
+    })
+    const pipeline = new chain([
+      fs.createReadStream(fileConvertUrl + fileName),
+      Pick.withParser({ filter: 'features' }),
+      new StreamArray(),
+      new batch({ batchSize: batchSizeInsert }),
+      (data) => {
+        var features = data
+        const hexagons = conversionStream(features, optResolution).hexagons
+        var valuesSql = []
+        for (const hex of hexagons) {
+          let hexValues = []
+          Object.entries(hex).forEach(([key, value]) => {
+            let valueText = null
+            if (value === null) {
+              valueText = 'null'
+            } else {
+              if (typeof value === 'string') {
+                valueText = '"' + value + '"'
+              } else valueText = value
+            }
+            hexValues.push(valueText)
+          })
+          var hexValuesString = hexValues.join(', ')
+          var valuesAndSqlSingleHex = `INSERT INTO groups (${tableFieldsNamesString}) VALUES (${hexValuesString})`
+          valuesSql.push(valuesAndSqlSingleHex)
+        }
+        return valuesSql
+      },
+      new batch({ batchSize: batchSizeInsert }),
+    ])
+    await pipeline.on('data', (data) => {
+      data.forEach(async (query, i) => {
+        try {
+          let d = new Date()
+          let t = d.getTime()
+          await dbins.run(query, [])
+          console.log('Insert finished ' + i)
+        } catch (error) {
+          console.log(error)
+        }
+      })
+    })
+    await pipeline.on('end', async () => {
+      try {
+        await dbins.close()
+      } catch (error) {
+        console.log(error)
+      }
+      console.log('Database is closed')
+    })
+  })
+}
+
+// formatting numbers to string: 2 => "02"
+function numberFormat(num) {
+  if (num < 10) {
+    return '0' + num
+  } else return '' + num
+}
+
+// log results of transformation
+function transformLog(level, allHex, uniqHex) {
+  console.log('level: ' + level + ' | all: ' + allHex + ' | uniq: ' + uniqHex)
+}
+
+// convert geoJSON features to H3 array
+function geoJsonFeaturesToH3Stream(features, resolution, attributes) {
+  let h3IndexesArray = []
+  let hexagons = features.map((feature) => {
+    let long = feature.value.geometry.coordinates[0]
+    let lat = feature.value.geometry.coordinates[1]
+    let h3Index = geoToH3(lat, long, resolution)
+    h3IndexesArray.push(h3Index)
+    let hexagon = { H3INDEX: h3Index }
+    if (attributes === 'attributes') {
+      Object.entries(feature.value.properties).forEach(([key, value]) => {
+        hexagon[key] = value
+      })
+    }
+    return hexagon
+  })
+  let h3IndexesArrayUnique = Array.from(new Set(h3IndexesArray))
+  // logging result
+  transformLog(
+    numberFormat(resolution),
+    h3IndexesArray.length,
+    h3IndexesArrayUnique.length
+  )
+  return {
+    hex: hexagons,
+    hexAllQuantity: h3IndexesArray.length,
+    hexUniqQuantity: h3IndexesArrayUnique.length,
   }
 }
-const outComeFilename = () => {
-  if (args[2] !== undefined) {
-    return args[2]
-  } else {
-    return null
+
+// selection lowest resolution among highest hexs quantity
+function optimalResolution(array) {
+  const maxUniqHexQuantity = maxBy(array, 'uniqhexs')
+  const maxUiqHexs = filter(array, ['uniqhexs', maxUniqHexQuantity.uniqhexs])
+  const minResolutionLevel = minBy(maxUiqHexs, 'level')
+  return minResolutionLevel.level
+}
+
+// check points topology stream
+function checkPointsTopologyStream(features) {
+  const coordinatesString = features.map((feature) => {
+    let long = feature.value.geometry.coordinates[0]
+    let lat = feature.value.geometry.coordinates[1]
+    let coord = '' + long + lat
+    return coord
+  })
+  const coordinatesStringUniq = Array.from(new Set(coordinatesString))
+  if (coordinatesString.length !== coordinatesStringUniq.length) {
+    let differences = coordinatesString.length - coordinatesStringUniq.length
+    console.log('-------------------------------------')
+    console.log(
+      'There are ' +
+        differences +
+        ' points with the same coordiantes in dataset'
+    )
+    console.log('-------------------------------------')
   }
 }
 
-// main function
-async function mainApp() {
-  console.time('time')
-
-  // get features as JSON stream
-  getJsonStream(inComeFilename)
-
-  var features = null
-
-  // get features form geoJSON
-  // features = getJsonFile(inComeFilename)
-
-  if (!features) {
-    return
-  }
-
-  // verification features for coordinates duplicates
-  checkPointsTopology(features)
-
-  // array of H3 indexes with attributes
-  var hexagons = null
-  if (inComeResolution()) {
-    let resolution = inComeResolution()
-    hexagons = geoJsonFeaturesToH3(features, resolution, 1).hex
+// convert features to hexagons H3
+function conversionStream(features, res) {
+  if (res) {
+    let resolution = res
+    let hexagons = geoJsonFeaturesToH3Stream(
+      features,
+      resolution,
+      'attributes'
+    ).hex
+    return {
+      hexagons: hexagons,
+      optResolution: res,
+    }
   } else {
     var startResolution = 1
     var conversionResult = {} // result of conversion function
     var uniqHexAtLevel = [] // hexagon quantity at each resolution level
     do {
-      conversionResult = geoJsonFeaturesToH3(features, startResolution, 0)
+      conversionResult = geoJsonFeaturesToH3Stream(features, startResolution)
       uniqHexAtLevel.push({
         level: startResolution,
         uniqhexs: conversionResult.hexUniqQuantity,
@@ -70,17 +240,21 @@ async function mainApp() {
       startResolution <= 15
     )
     const optResolution = optimalResolution(uniqHexAtLevel)
-    console.log('-------------------------------------')
-    console.log('Optimal resolution:')
-    hexagons = geoJsonFeaturesToH3(features, optResolution, 1).hex
+    console.log('Optimal resolution for this chunk: ' + optResolution)
+    let hexagons = geoJsonFeaturesToH3Stream(
+      features,
+      optResolution,
+      'attributes'
+    ).hex
+    return {
+      hexagons: hexagons,
+      optResolution: optResolution,
+    }
   }
+}
 
-  // convert H3 indexes to geoJSON features
-  if (outComeFilename()) {
-    h3toGeoJsonAttributes(hexagons)
-  }
-
-  // define fields names and types for sqlite table
+// define fields names and types for sqlite table
+function defineDBfieldTypes(hexagons) {
   const hexFirst = hexagons[0]
   var tableFieldsNames = []
   var tableFieldsTypes = []
@@ -116,203 +290,19 @@ async function mainApp() {
     tableFieldsNames.push(key)
     tableFieldsTypes.push(field)
   })
-
   const tableFieldsNamesString = tableFieldsNames.join(',')
   const tableFieldsTypesString = tableFieldsTypes.join(', ')
-
-  // db connection
-  const db = await open({
-    filename: './db/dggs.db',
-    driver: sqlite3.Database,
-  })
-  console.log('Started recording to database')
-  console.log('...')
-
-  // remove table if exists
-  await db.run('DROP TABLE IF EXISTS groups')
-
-  // create table
-  await db.run(`CREATE TABLE groups(${tableFieldsTypesString})`)
-
-  // insert data to table
-  // hexagons.forEach((hex) => {
-  //   let hexValues = []
-  //   Object.entries(hex).forEach(([key, value]) => {
-  //     let valueText = null
-  //     if (value === null) {
-  //       valueText = 'null'
-  //     } else {
-  //       if (typeof value === 'string') {
-  //         valueText = '"' + value + '"'
-  //       } else valueText = value
-  //     }
-  //     hexValues.push(valueText)
-  //   })
-  //   var hexValuesString = hexValues.join(', ')
-  //   var sql = `INSERT INTO groups (${tableFieldsNamesString}) VALUES (${hexValuesString})`
-  //   db.run(sql, [], function (err) {
-  //     if (err) {
-  //       return console.error(err.message)
-  //     }
-  //     console.log(`Rows inserted ${this.changes}`)
-  //   })
-  // })
-
-  // query data to check
-  // let query2 = `SELECT rowid, H3INDEX, LATITUDE, LONGITUDE, YEAR FROM groups`
-  // await db.each(query2, [], (err, row) => {
-  //   if (err) {
-  //     throw err
-  //   }
-  //   console.log(
-  //     `${row.rowid} ${row.H3INDEX} ${row.YEAR} ${row.LATITUDE} ${row.LONGITUDE} `
-  //   )
-  // })
-
-  // close db connection
-  await db.close()
-  console.log('Finished recording to database')
-  console.timeEnd('time')
-}
-
-// helper functions
-// ====================================================================
-
-// formatting numbers to string: 2 => "02"
-function numberFormat(num) {
-  if (num < 10) {
-    return '0' + num
-  } else return '' + num
-}
-
-// log results of transformation
-function transformLog(level, allHex, uniqHex) {
-  console.log('level: ' + level + ' | all: ' + allHex + ' | uniq: ' + uniqHex)
-}
-
-// convert geoJSON features to H3 array
-function geoJsonFeaturesToH3(features, resolution, attributes) {
-  let h3IndexesArray = []
-  let hexagons = features.map((feature) => {
-    let long = feature.geometry.coordinates[0]
-    let lat = feature.geometry.coordinates[1]
-    let h3Index = geoToH3(lat, long, resolution)
-    h3IndexesArray.push(h3Index)
-    let hexagon = { H3INDEX: h3Index }
-    if (attributes === 1) {
-      Object.entries(feature.properties).forEach(([key, value]) => {
-        hexagon[key] = value
-      })
-    }
-    return hexagon
-  })
-  let h3IndexesArrayUnique = Array.from(new Set(h3IndexesArray))
-  // logging result
-  transformLog(
-    numberFormat(resolution),
-    h3IndexesArray.length,
-    h3IndexesArrayUnique.length
-  )
   return {
-    hex: hexagons,
-    hexAllQuantity: h3IndexesArray.length,
-    hexUniqQuantity: h3IndexesArrayUnique.length,
+    names: tableFieldsNamesString,
+    types: tableFieldsTypesString,
   }
 }
 
-// selection lowest resolution among highest hexs quantity
-function optimalResolution(array) {
-  const maxUniqHexQuantity = maxBy(array, 'uniqhexs')
-  const maxUiqHexs = filter(array, ['uniqhexs', maxUniqHexQuantity.uniqhexs])
-  const minResolutionLevel = minBy(maxUiqHexs, 'level')
-  return minResolutionLevel.level
-}
-
-// save H3 indexes as hexagons with attributes to geojson
-function h3toGeoJsonAttributes(indexes) {
-  let hexagons = []
-  indexes.forEach((index) => {
-    // vector hexagon on the map
-    let hexagon = h3ToFeature(index.H3INDEX)
-    // assign all attributes of featureFromAPI to vector hexagon
-    Object.entries(index).forEach((entry) => {
-      const [key, value] = entry
-      if (key !== 'H3INDEX') {
-        hexagon.properties[key] = value
-      }
-    })
-    hexagons.push(hexagon)
-  })
-  let geoJsonObject = {
-    type: 'FeatureCollection',
-    features: hexagons,
-  }
-  const filePath = './files/resultGeojson/' + outComeFilename()
-  fs.writeFile(filePath, JSON.stringify(geoJsonObject), function (err) {
-    if (err) {
-      return console.log(err)
-    }
-  })
-}
-
-// get features form geoJSON as stream
-function getJsonStream(file) {
-  console.log('Begin stream...')
-  const pipeline = new chain([
-    fs.createReadStream('./files/geoJsonToConvert/' + file),
-    Pick.withParser({ filter: 'features' }),
-    new StreamArray(),
-    new batch({ batchSize: 100000 }),
-  ])
-
-  pipeline.on('data', (data) => {
-    console.log(data.length)
-    console.log('Reading next chunk...')
-  })
-
-  pipeline.on('end', () => {
-    console.log('Completed')
-  })
-}
-
-// get features from geoJSON as file
-function getJsonFile(file) {
-  let features = null
-  try {
-    const data = fs.readFileSync(
-      './files/geoJsonToConvert/' + inComeFilename,
-      'utf8'
-    )
-    const dataJSON = JSON.parse(data)
-    features = dataJSON.features
-    const crs = dataJSON.crs
-    return features
-  } catch (err) {
-    console.log(`Error reading file from disk: ${err}`)
+// console argument check
+function consoleArgCheck(arg) {
+  if (arg !== undefined) {
+    return arg
+  } else {
     return null
   }
 }
-
-// check points topology
-function checkPointsTopology(features) {
-  const coordinatesString = features.map((feature) => {
-    let long = feature.geometry.coordinates[0]
-    let lat = feature.geometry.coordinates[1]
-    let coord = '' + long + lat
-    return coord
-  })
-  const coordinatesStringUniq = Array.from(new Set(coordinatesString))
-  if (coordinatesString.length !== coordinatesStringUniq.length) {
-    let differences = coordinatesString.length - coordinatesStringUniq.length
-    console.log('-------------------------------------')
-    console.log(
-      'There are ' +
-        differences +
-        ' points with the same coordiantes in dataset'
-    )
-    console.log('-------------------------------------')
-  }
-}
-
-// run app
-mainApp()
