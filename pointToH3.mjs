@@ -1,4 +1,5 @@
 import fs from 'fs'
+import path from 'path'
 import StreamArray from 'stream-json/streamers/StreamArray.js'
 import Pick from 'stream-json/filters/Pick.js'
 import batch from 'stream-json/utils/Batch.js'
@@ -14,6 +15,7 @@ sqlite3.verbose()
 // conlsole arguments
 const args = process.argv.slice(2)
 const inComeFilename = args[0]
+const tableName = path.basename(args[0], '.geojson')
 const inComeResolution = consoleArgCheck(args[1])
 
 // files URLs relative
@@ -45,8 +47,7 @@ async function getJsonStream(
   console.log('Begin stream')
   console.log('...')
 
-  var tableFieldsNamesString = null // DB table fields names
-  var tableFieldsTypesString = null // DB table fields types
+  var namesTypesKeyValue = null // DB table fields names and types as key-value
   var optResolution = 0
 
   // Loop to DEFINE table types and names
@@ -64,23 +65,56 @@ async function getJsonStream(
     if (optResolution < pipeResolution) {
       optResolution = pipeResolution
     }
-    let DBfieldTypes = defineDBfieldTypes(pipeHexagons)
-    if (!tableFieldsNamesString) {
-      tableFieldsNamesString = DBfieldTypes.names
-    }
-    if (!tableFieldsTypesString) {
-      tableFieldsTypesString = DBfieldTypes.types
+    if (!namesTypesKeyValue) {
+      namesTypesKeyValue = defineDBfieldTypes(pipeHexagons)
+      console.log(namesTypesKeyValue)
+    } else {
+      namesTypesKeyValue.forEach((el) => {
+        // for null values
+        if (el.type === null) {
+          let hexagon = pipeHexagons.find((hex) => hex[el.name] !== null)
+          if (hexagon !== undefined) {
+            el.type = typeDefine(hexagon[el.name])
+          }
+        }
+        // for integer values
+        if (el.type === 'INTEGER') {
+          pipeHexagons.forEach((hex) => {
+            if (!Number.isInteger(hex[el.name])) {
+              el.type = 'REAL'
+            }
+          })
+        }
+      })
     }
   })
-  await pipelineDefine.on('finish', async () => {
+  await pipelineDefine.on('end', async () => {
+    // replace null values with text
+    namesTypesKeyValue.forEach((el) => {
+      if (el.type === null) {
+        el.type = 'TEXT'
+      }
+    })
+    let names = namesTypesKeyValue.map((item) => item.name)
+    console.log(names)
+    let namesPlusTypes = namesTypesKeyValue.map((item) => {
+      return item.name + ' ' + item.type
+    })
+    console.log(namesPlusTypes)
+
+    // names to string
+    const tableFieldsNamesString = names.join(',')
+    // names and types to string
+    const tableFieldsTypesString = namesPlusTypes.join(',')
+
     const db = await open({
       filename: databaseUrl,
       driver: sqlite3.Database,
     })
-    await db.run('DROP TABLE IF EXISTS groups')
-    await db.run(`CREATE TABLE groups(${tableFieldsTypesString})`)
+    await db.run(`DROP TABLE IF EXISTS ${tableName}`)
+    await db.run(`CREATE TABLE ${tableName}(${tableFieldsTypesString})`)
     await db.close()
-    console.log('Define completed with reslution: ' + optResolution)
+    console.log('Define completed with optReslution: ' + optResolution)
 
     // Loop to INSERT data into DB
     const dbins = await open({
@@ -110,7 +144,7 @@ async function getJsonStream(
             hexValues.push(valueText)
           })
           var hexValuesString = hexValues.join(', ')
-          var valuesAndSqlSingleHex = `INSERT INTO groups (${tableFieldsNamesString}) VALUES (${hexValuesString})`
+          var valuesAndSqlSingleHex = `INSERT INTO ${tableName} (${tableFieldsNamesString}) VALUES (${hexValuesString})`
           valuesSql.push(valuesAndSqlSingleHex)
         }
         return valuesSql
@@ -240,7 +274,7 @@ function conversionStream(features, res) {
       startResolution <= 15
     )
     const optResolution = optimalResolution(uniqHexAtLevel)
-    console.log('Optimal resolution for this chunk: ' + optResolution)
+    console.log('Optimal resolution for chunk: ' + optResolution)
     let hexagons = geoJsonFeaturesToH3Stream(
       features,
       optResolution,
@@ -255,46 +289,51 @@ function conversionStream(features, res) {
 
 // define fields names and types for sqlite table
 function defineDBfieldTypes(hexagons) {
-  const hexFirst = hexagons[0]
-  var tableFieldsNames = []
-  var tableFieldsTypes = []
-  // define types of each property of hexagon
-  Object.entries(hexFirst).forEach(([key, value]) => {
-    let field = null
+  var tableTypes = []
+  Object.entries(hexagons[0]).forEach(([key, value]) => {
+    var type = null
     let hexagon = hexagons.find((hex) => hex[key] !== null)
     if (hexagon === undefined) {
-      field = `${key} TEXT`
+      type = { name: key, type: null }
     } else {
-      let fieldTypeOf = typeof value
-      let fieldType = () => {
-        if (fieldTypeOf === 'string') {
-          return 'TEXT'
-        } else {
-          if (fieldTypeOf === 'number') {
-            if (Number.isInteger(value)) {
-              return 'INTEGER'
-            } else {
-              return 'REAL'
-            }
-          } else {
-            if (fieldTypeOf === 'boolean') {
-              return 'TEXT'
-            } else {
-              return 'TEXT'
-            }
-          }
-        }
-      }
-      field = `${key} ${fieldType()}`
+      type = { name: key, type: typeDefine(hexagon[key]) }
     }
-    tableFieldsNames.push(key)
-    tableFieldsTypes.push(field)
+    tableTypes.push(type)
   })
-  const tableFieldsNamesString = tableFieldsNames.join(',')
-  const tableFieldsTypesString = tableFieldsTypes.join(', ')
-  return {
-    names: tableFieldsNamesString,
-    types: tableFieldsTypesString,
+
+  return tableTypes
+}
+
+// type define
+function typeDefine(value) {
+  const fieldTypeOf = typeof value
+  var type = null
+  switch (fieldTypeOf) {
+    case 'string':
+      type = 'TEXT'
+      break
+    case 'number':
+      type = checkInteger(value)
+      break
+    case 'boolean':
+      type = 'TEXT'
+      break
+    case 'object':
+      console.log('|||||||||||||||||||||||||||||||> Object: ' + value)
+      break
+    default:
+      type = null
+      break
+  }
+  return type
+}
+
+// check number is it integer
+function checkInteger(value) {
+  if (Number.isInteger(value)) {
+    return 'INTEGER'
+  } else {
+    return 'REAL'
   }
 }
 
