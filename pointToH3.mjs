@@ -15,7 +15,8 @@ sqlite3.verbose()
 // conlsole arguments
 const args = process.argv.slice(2)
 const inComeFilename = args[0]
-const tableName = path.basename(args[0], '.geojson')
+const pathBaseName = path.basename(args[0], '.geojson')
+const tableName = pathBaseName.replace(/-/g, '_').replace(/ /g, '_')
 const inComeResolution = consoleArgCheck(args[1])
 
 // files URLs relative
@@ -23,7 +24,7 @@ const fileConvertUrl = './files/geoJsonToConvert/'
 const databaseUrl = './db/db7.db'
 
 // quantity of json objects per 1 chunk
-const meanBatchSizeDefine = 100000
+const meanBatchSizeDefine = 5
 const meanBatchSizeInsert = 10000
 
 // read geoJSON as stream
@@ -143,8 +144,6 @@ async function getJsonStream(
     await pipeline.on('data', (data) => {
       data.forEach(async (query, i) => {
         try {
-          let d = new Date()
-          let t = d.getTime()
           await dbins.run(query, [])
           console.log('Insert finished ' + i)
         } catch (error) {
