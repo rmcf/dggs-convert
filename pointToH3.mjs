@@ -62,30 +62,19 @@ async function getJsonStream(
     const hexagonsAndResolution = conversionStream(features, resolution)
     const pipeHexagons = hexagonsAndResolution.hexagons
     const pipeResolution = hexagonsAndResolution.optResolution
+    // optimal resolution - highest value from all chunks
     if (optResolution < pipeResolution) {
       optResolution = pipeResolution
     }
+    // field types in the first chunk
     if (!namesTypesKeyValue) {
       namesTypesKeyValue = defineDBfieldTypes(pipeHexagons)
       console.log(namesTypesKeyValue)
     } else {
-      namesTypesKeyValue.forEach((el) => {
-        // for null values
-        if (el.type === null) {
-          let hexagon = pipeHexagons.find((hex) => hex[el.name] !== null)
-          if (hexagon !== undefined) {
-            el.type = typeDefine(hexagon[el.name])
-          }
-        }
-        // for integer values
-        if (el.type === 'INTEGER') {
-          pipeHexagons.forEach((hex) => {
-            if (!Number.isInteger(hex[el.name])) {
-              el.type = 'REAL'
-            }
-          })
-        }
-      })
+      // for null values
+      checkValuesForNotNull(namesTypesKeyValue, pipeHexagons)
+      // for integer values
+      checkIntegerForReal(namesTypesKeyValue, pipeHexagons)
     }
   })
   await pipelineDefine.on('end', async () => {
@@ -300,7 +289,8 @@ function defineDBfieldTypes(hexagons) {
     }
     tableTypes.push(type)
   })
-
+  // for integer values
+  checkIntegerForReal(tableTypes, hexagons)
   return tableTypes
 }
 
@@ -335,6 +325,31 @@ function checkInteger(value) {
   } else {
     return 'REAL'
   }
+}
+
+// check array with integer for real values
+function checkIntegerForReal(arrayNameType, hexagons) {
+  arrayNameType.forEach((el) => {
+    if (el.type === 'INTEGER') {
+      hexagons.forEach((hex) => {
+        if (!Number.isInteger(hex[el.name])) {
+          el.type = 'REAL'
+        }
+      })
+    }
+  })
+}
+
+// check array with null values for not null
+function checkValuesForNotNull(arrayNameType, hexagons) {
+  arrayNameType.forEach((el) => {
+    if (el.type === null) {
+      let hexagon = hexagons.find((hex) => hex[el.name] !== null)
+      if (hexagon !== undefined) {
+        el.type = typeDefine(hexagon[el.name])
+      }
+    }
+  })
 }
 
 // console argument check
