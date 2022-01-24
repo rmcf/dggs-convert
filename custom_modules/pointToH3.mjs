@@ -1,5 +1,4 @@
 import fs from 'fs'
-import path from 'path'
 import StreamArray from 'stream-json/streamers/StreamArray.js'
 import Pick from 'stream-json/filters/Pick.js'
 import batch from 'stream-json/utils/Batch.js'
@@ -12,39 +11,36 @@ import minBy from 'lodash.minby'
 import filter from 'lodash.filter'
 sqlite3.verbose()
 
-// conlsole arguments
-const args = process.argv.slice(2)
-const inComeFilename = args[0]
-const inComeResolution = consoleArgCheck(args[1])
+/* DESCRIPTION
+   Script accepts 2 arguments:
+   1) geoJSON file name (required)
+   2) DGGS H3 resolution (optional)
+*/
 
-const pathBaseName = path.basename(inComeFilename, '.geojson')
-const tableName = pathBaseName.replace(/-/g, '_').replace(/ /g, '_')
-
-// files URLs relative
-const fileConvertUrl = './files/geoJsonToConvert/'
-const databaseUrl = './db/db7.db'
-
-// quantity of json objects per 1 chunk
-const meanBatchSizeDefine = 100000
-const meanBatchSizeInsert = 10000
+/* COMMAND LINE EXAMPLE
+   "node pointToH3.mjs modis.geojson 5"
+*/
 
 // read geoJSON as stream
-getJsonStream(
-  inComeFilename,
-  inComeResolution,
-  meanBatchSizeDefine,
-  meanBatchSizeInsert
-)
+// getJsonStream(
+//   inComeFilename,
+//   inComeResolution,
+//   meanBatchSizeDefine,
+//   meanBatchSizeInsert
+// )
 
 // PURE FUNCTIONS
 // ====================================================================
 
 // get features form geoJSON as stream
-async function getJsonStream(
+export async function pointsToH3(
   fileName,
   resolution,
   batchSizeDefine,
-  batchSizeInsert
+  batchSizeInsert,
+  fileConvertUrl,
+  tableName,
+  databaseUrl
 ) {
   var hrstart = process.hrtime()
 
@@ -173,6 +169,7 @@ async function getJsonStream(
         console.log(error)
       }
       console.log('Database is closed')
+      return true
     })
   })
 }
@@ -364,13 +361,4 @@ function checkValuesForNotNull(arrayNameType, hexagons) {
       }
     }
   })
-}
-
-// console argument check
-function consoleArgCheck(arg) {
-  if (arg !== undefined) {
-    return arg
-  } else {
-    return null
-  }
 }
