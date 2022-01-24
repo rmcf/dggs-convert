@@ -15,16 +15,17 @@ sqlite3.verbose()
 // conlsole arguments
 const args = process.argv.slice(2)
 const inComeFilename = args[0]
-const pathBaseName = path.basename(args[0], '.geojson')
-const tableName = pathBaseName.replace(/-/g, '_').replace(/ /g, '_')
 const inComeResolution = consoleArgCheck(args[1])
+
+const pathBaseName = path.basename(inComeFilename, '.geojson')
+const tableName = pathBaseName.replace(/-/g, '_').replace(/ /g, '_')
 
 // files URLs relative
 const fileConvertUrl = './files/geoJsonToConvert/'
 const databaseUrl = './db/db7.db'
 
 // quantity of json objects per 1 chunk
-const meanBatchSizeDefine = 5
+const meanBatchSizeDefine = 100000
 const meanBatchSizeInsert = 10000
 
 // read geoJSON as stream
@@ -45,6 +46,8 @@ async function getJsonStream(
   batchSizeDefine,
   batchSizeInsert
 ) {
+  var hrstart = process.hrtime()
+
   console.log('Begin stream')
   console.log('...')
 
@@ -85,6 +88,8 @@ async function getJsonStream(
         el.type = 'TEXT'
       }
     })
+    console.log('Define completed with optResolution: ' + optResolution)
+
     let names = namesTypesKeyValue.map((item) => item.name)
     console.log(names)
     let namesPlusTypes = namesTypesKeyValue.map((item) => {
@@ -96,6 +101,9 @@ async function getJsonStream(
     const tableFieldsNamesString = names.join(',')
     // names and types to string
     const tableFieldsTypesString = namesPlusTypes.join(',')
+    console.log('TIME -------------------------------------')
+    var hrend = process.hrtime(hrstart)
+    console.info('Execution time (hr): %ds %dms', hrend[0], hrend[1] / 1000000)
 
     const db = await open({
       filename: databaseUrl,
@@ -104,7 +112,6 @@ async function getJsonStream(
     await db.run(`DROP TABLE IF EXISTS ${tableName}`)
     await db.run(`CREATE TABLE ${tableName}(${tableFieldsTypesString})`)
     await db.close()
-    console.log('Define completed with optReslution: ' + optResolution)
 
     // Loop to INSERT data into DB
     const dbins = await open({
@@ -117,6 +124,7 @@ async function getJsonStream(
       new StreamArray(),
       new batch({ batchSize: batchSizeInsert }),
       (data) => {
+        // let timeStart = process.hrtime()
         var features = data
         const hexagons = conversionStream(features, optResolution).hexagons
         var valuesSql = []
@@ -137,6 +145,13 @@ async function getJsonStream(
           var valuesAndSqlSingleHex = `INSERT INTO ${tableName} (${tableFieldsNamesString}) VALUES (${hexValuesString})`
           valuesSql.push(valuesAndSqlSingleHex)
         }
+        // console.log('CHUNK TIME -------------------------------------')
+        // let timeEnd = process.hrtime(timeStart)
+        // console.info(
+        //   'Execution time (hr): %ds %dms',
+        //   timeEnd[0],
+        //   timeEnd[1] / 1000000
+        // )
         return valuesSql
       },
       new batch({ batchSize: batchSizeInsert }),
