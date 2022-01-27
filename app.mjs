@@ -1,18 +1,29 @@
 import fs from 'fs'
 import path from 'path'
 import { pointsToH3 } from './custom_modules/pointToH3.mjs'
+import { polygonsToH3 } from './custom_modules/polygonsToH3.mjs'
 import StreamArray from 'stream-json/streamers/StreamArray.js'
 import Pick from 'stream-json/filters/Pick.js'
 import batch from 'stream-json/utils/Batch.js'
 import chain from 'stream-chain'
 
+/* DESCRIPTION
+   Script accepts 2 arguments:
+   1) geoJSON file name (required)
+   2) DGGS H3 resolution (optional)
+*/
+
+/* COMMAND LINE EXAMPLE
+   "node app.mjs modis.geojson 5"
+*/
+
 // run app
-mainApp()
+app()
 
 // PURE FUNCTIONS
 // ====================================================================
 
-async function mainApp() {
+async function app() {
   // conlsole arguments
   const args = process.argv.slice(2)
   const inComeFilename = args[0]
@@ -24,10 +35,23 @@ async function mainApp() {
   // files URLs relative
   const filesToConvertFolder = './files/geoJsonToConvert/'
   const databaseUrl = './db/database.db'
+  const convertedJSONFolder = './files/resultGeojson/' // default: ./files/resultGeojson/
 
   // quantity of json objects per 1 chunk
   const meanBatchSizeDefine = 100000
   const meanBatchSizeInsert = 10000
+
+  // arguments of conversion function (points, polygons)
+  const params = [
+    inComeFilename,
+    inComeResolution,
+    meanBatchSizeDefine,
+    meanBatchSizeInsert,
+    filesToConvertFolder,
+    tableName,
+    databaseUrl,
+    convertedJSONFolder,
+  ]
 
   // define geometry type
   const pipelineDefine = new chain([
@@ -37,21 +61,18 @@ async function mainApp() {
     new batch({ batchSize: 1 }),
   ])
   await pipelineDefine.on('data', (features) => {
-    var geometryType = features[0].value.geometry.type
+    const geometryType = features[0].value.geometry.type
     pipelineDefine.pause()
-    console.log('Geometry type ' + geometryType)
-    if (geometryType === 'Point') {
-      pointsToH3(
-        inComeFilename,
-        inComeResolution,
-        meanBatchSizeDefine,
-        meanBatchSizeInsert,
-        filesToConvertFolder,
-        tableName,
-        databaseUrl
-      )
-    } else {
-      console.log('Not point')
+    switch (geometryType) {
+      case 'Point':
+        pointsToH3(...params)
+        break
+      case 'Polygon':
+      case 'MultiPolygon':
+        polygonsToH3(...params)
+        break
+      default:
+        console.log('Unknown geometry')
     }
   })
 }

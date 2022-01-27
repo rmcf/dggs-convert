@@ -5,7 +5,7 @@ import batch from 'stream-json/utils/Batch.js'
 import chain from 'stream-chain'
 import sqlite3 from 'sqlite3'
 import { open } from 'sqlite'
-import { geoToH3 } from 'h3-js'
+import { polyfill } from 'h3-js'
 import maxBy from 'lodash.maxby'
 import minBy from 'lodash.minby'
 import filter from 'lodash.filter'
@@ -13,7 +13,7 @@ import { h3toGeoJsonFile } from './h3ToGeoJSONfile.mjs'
 sqlite3.verbose()
 
 // get features form geoJSON as stream
-export async function pointsToH3(
+export async function polygonsToH3(
   fileName,
   resolution,
   batchSizeDefine,
@@ -39,7 +39,6 @@ export async function pointsToH3(
     new batch({ batchSize: batchSizeDefine }),
   ])
   await pipelineDefine.on('data', (features) => {
-    checkPointsTopologyStream(features)
     const hexagonsAndResolution = conversionStream(features, resolution)
     const pipeHexagons = hexagonsAndResolution.hexagons
     const pipeResolution = hexagonsAndResolution.optResolution
@@ -174,32 +173,92 @@ function transformLog(level, allHex, uniqHex) {
 
 // convert geoJSON features to H3 array
 function geoJsonFeaturesToH3Stream(features, resolution, attributes) {
-  let h3IndexesArray = []
-  let hexagons = features.map((feature) => {
-    let long = feature.value.geometry.coordinates[0]
-    let lat = feature.value.geometry.coordinates[1]
-    let h3Index = geoToH3(lat, long, resolution)
-    h3IndexesArray.push(h3Index)
-    let hexagon = { H3INDEX: h3Index }
+  // loop features
+  const h3indexesArrayNested = features.map((feature, fid) => {
+    if (feature.value.geometry.type === 'MultiPolygon') {
+      console.log(feature.value.geometry.type)
+      let H3indexes = convertMultiPolygonFeatureToH3indexes(
+        feature,
+        resolution,
+        attributes,
+        fid
+      )
+      return H3indexes
+    } else {
+      console.log(feature.value.geometry.type)
+      let H3indexes = convertPolygonFeatureToH3indexes(
+        feature,
+        resolution,
+        attributes,
+        fid
+      )
+      return H3indexes
+    }
+  })
+  const h3indexesArrayFlattened = [].concat.apply([], h3indexesArrayNested)
+  return {
+    hex: h3indexesArrayFlattened,
+    hexAllQuantity: h3indexesArrayFlattened.length,
+  }
+}
+
+// convert polygon feature to H3 indexes inside polygon
+function convertPolygonFeatureToH3indexes(
+  feature,
+  resolution,
+  attributes,
+  fid
+) {
+  const featureProperties = feature.value.properties
+  const polygonCoordinates = feature.value.geometry.coordinates[0]
+  const resolutionInteger = parseInt(resolution)
+  const polygonH3indexes = polyfill(polygonCoordinates, resolutionInteger, true)
+  // loop hexagons inside feature to add attributes
+  const polygonH3indexesAttributes = polygonH3indexes.map((hexIndex) => {
+    let H3indexAttributes = { H3INDEX: hexIndex, FID: fid + 1 }
     if (attributes === 'attributes') {
-      Object.entries(feature.value.properties).forEach(([key, value]) => {
-        hexagon[key] = value
+      Object.entries(featureProperties).forEach(([key, value]) => {
+        H3indexAttributes[key] = value
       })
     }
-    return hexagon
+    return H3indexAttributes
   })
-  let h3IndexesArrayUnique = Array.from(new Set(h3IndexesArray))
-  // logging result
-  transformLog(
-    numberFormat(resolution),
-    h3IndexesArray.length,
-    h3IndexesArrayUnique.length
+  return polygonH3indexesAttributes
+}
+
+// convert polygon feature to H3 indexes inside polygon
+function convertMultiPolygonFeatureToH3indexes(
+  feature,
+  resolution,
+  attributes,
+  fid
+) {
+  const featureProperties = feature.value.properties
+  const polygons = feature.value.geometry.coordinates
+  const resolutionInteger = parseInt(resolution)
+  const h3indexesArrayNested = polygons.map((polygon) => {
+    const polygonH3indexes = polyfill(polygon, resolutionInteger, true)
+    return polygonH3indexes
+  })
+  const h3indexesArrayNestedNotEmpty = h3indexesArrayNested.filter((item) => {
+    return item.length > 0
+  })
+  const h3indexesArrayFlattened = [].concat.apply(
+    [],
+    h3indexesArrayNestedNotEmpty
   )
-  return {
-    hex: hexagons,
-    hexAllQuantity: h3IndexesArray.length,
-    hexUniqQuantity: h3IndexesArrayUnique.length,
-  }
+
+  // loop hexagons inside feature to add attributes
+  const polygonH3indexesAttributes = h3indexesArrayFlattened.map((hexIndex) => {
+    let H3indexAttributes = { H3INDEX: hexIndex, FID: fid + 1 }
+    if (attributes === 'attributes') {
+      Object.entries(featureProperties).forEach(([key, value]) => {
+        H3indexAttributes[key] = value
+      })
+    }
+    return H3indexAttributes
+  })
+  return polygonH3indexesAttributes
 }
 
 // selection lowest resolution among highest hexs quantity
@@ -208,27 +267,6 @@ function optimalResolution(array) {
   const maxUiqHexs = filter(array, ['uniqhexs', maxUniqHexQuantity.uniqhexs])
   const minResolutionLevel = minBy(maxUiqHexs, 'level')
   return minResolutionLevel.level
-}
-
-// check points topology stream
-function checkPointsTopologyStream(features) {
-  const coordinatesString = features.map((feature) => {
-    let long = feature.value.geometry.coordinates[0]
-    let lat = feature.value.geometry.coordinates[1]
-    let coord = '' + long + lat
-    return coord
-  })
-  const coordinatesStringUniq = Array.from(new Set(coordinatesString))
-  if (coordinatesString.length !== coordinatesStringUniq.length) {
-    let differences = coordinatesString.length - coordinatesStringUniq.length
-    console.log('-------------------------------------')
-    console.log(
-      'There are ' +
-        differences +
-        ' points with the same coordiantes in dataset'
-    )
-    console.log('-------------------------------------')
-  }
 }
 
 // convert features to hexagons H3
@@ -245,30 +283,17 @@ function conversionStream(features, res) {
       optResolution: res,
     }
   } else {
-    var startResolution = 1
-    var conversionResult = {} // result of conversion function
-    var uniqHexAtLevel = [] // hexagon quantity at each resolution level
-    do {
-      conversionResult = geoJsonFeaturesToH3Stream(features, startResolution)
-      uniqHexAtLevel.push({
-        level: startResolution,
-        uniqhexs: conversionResult.hexUniqQuantity,
-      })
-      startResolution++
-    } while (
-      !(conversionResult.hexAllQuantity === conversionResult.hexUniqQuantity) &&
-      startResolution <= 15
-    )
-    const optResolution = optimalResolution(uniqHexAtLevel)
-    console.log('Optimal resolution for chunk: ' + optResolution)
+    // optimal resolution calculation
+    console.log('input resolution')
+    let resolution = 6
     let hexagons = geoJsonFeaturesToH3Stream(
       features,
-      optResolution,
+      resolution,
       'attributes'
     ).hex
     return {
       hexagons: hexagons,
-      optResolution: optResolution,
+      optResolution: res,
     }
   }
 }
@@ -306,7 +331,7 @@ function typeDefine(value) {
       type = 'TEXT'
       break
     case 'object':
-      console.log('|||||||||||||||||||||||||||||||> Object: ' + value)
+      console.log('Object: ' + value)
       break
     default:
       type = null
