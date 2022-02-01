@@ -1,7 +1,12 @@
 {
   "dependencies": {
+    "@turf/area": "^6.5.0",
+    "@turf/helpers": "^6.5.0",
+    "@turf/length": "^6.5.0",
+    "@turf/polygon-to-line": "^6.5.0",
     "geojson2h3": "^1.2.0",
     "h3-js": "^3.7.2",
+    "json2csv": "^5.0.6",
     "lodash.filter": "^4.6.0",
     "lodash.maxby": "^4.6.0",
     "lodash.minby": "^4.6.0",
