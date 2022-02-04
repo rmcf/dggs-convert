@@ -98,90 +98,90 @@ export async function polygonsToH3(
     var hrend = process.hrtime(hrstart)
     console.info('Execution time (hr): %ds %dms', hrend[0], hrend[1] / 1000000)
 
-    // const db = await open({
-    //   filename: databaseUrl,
-    //   driver: sqlite3.Database,
-    // })
+    const db = await open({
+      filename: databaseUrl,
+      driver: sqlite3.Database,
+    })
 
-    // await db.run(`DROP TABLE IF EXISTS ${tableName}`)
-    // await db.run(`CREATE TABLE ${tableName}(${tableFieldsTypesString})`)
-    // await db.close()
+    await db.run(`DROP TABLE IF EXISTS ${tableName}`)
+    await db.run(`CREATE TABLE ${tableName}(${tableFieldsTypesString})`)
+    await db.close()
 
-    // // Loop to INSERT data into DB
-    // const dbins = await open({
-    //   filename: databaseUrl,
-    //   driver: sqlite3.Database,
-    // })
-    // const pipeline = new chain([
-    //   fs.createReadStream(fileConvertUrl + fileName),
-    //   Pick.withParser({ filter: 'features' }),
-    //   new StreamArray(),
-    //   new batch({ batchSize: batchSizeInsert }),
-    //   (data) => {
-    //     // let timeStart = process.hrtime()
-    //     var features = data
-    //     const hexagons = conversionStream(features, optResolution).hexagons
-    //     var valuesSql = []
-    //     for (const hex of hexagons) {
-    //       let hexValues = []
-    //       Object.entries(hex).forEach(([key, value]) => {
-    //         let valueText = null
-    //         if (value === null) {
-    //           valueText = 'null'
-    //         } else {
-    //           if (typeof value === 'string') {
-    //             valueText = '"' + value + '"'
-    //           } else valueText = value
-    //         }
-    //         hexValues.push(valueText)
-    //       })
-    //       var hexValuesString = hexValues.join(', ')
-    //       var valuesAndSqlSingleHex = `INSERT INTO ${tableName} (${tableFieldsNamesString}) VALUES (${hexValuesString})`
-    //       valuesSql.push(valuesAndSqlSingleHex)
-    //     }
-    //     // console.log('CHUNK TIME -------------------------------------')
-    //     // let timeEnd = process.hrtime(timeStart)
-    //     // console.info(
-    //     //   'Execution time (hr): %ds %dms',
-    //     //   timeEnd[0],
-    //     //   timeEnd[1] / 1000000
-    //     // )
-    //     return valuesSql
-    //   },
-    //   new batch({ batchSize: batchSizeInsert }),
-    // ])
-    // await pipeline.on('data', (data) => {
-    //   data.forEach(async (query, i) => {
-    //     try {
-    //       await dbins.run(query, [])
-    //       console.log('Insert finished ' + i)
-    //     } catch (error) {
-    //       console.log(error)
-    //     }
-    //   })
-    // })
-    // await pipeline.on('end', async () => {
-    //   // write to file
-    //   let fields = Object.keys(statistics[0])
-    //   const opts = { fields }
-    //   try {
-    //     const parser = new Parser(opts)
-    //     const csv = parser.parse(statistics)
-    //     fs.writeFileSync('./files/stat/stat.csv', csv)
-    //   } catch (err) {
-    //     console.error(err)
-    //   }
+    // Loop to INSERT data into DB
+    const dbins = await open({
+      filename: databaseUrl,
+      driver: sqlite3.Database,
+    })
+    const pipeline = new chain([
+      fs.createReadStream(fileConvertUrl + fileName),
+      Pick.withParser({ filter: 'features' }),
+      new StreamArray(),
+      new batch({ batchSize: batchSizeInsert }),
+      (data) => {
+        // let timeStart = process.hrtime()
+        var features = data
+        const hexagons = conversionStream(features, optResolution).hexagons
+        var valuesSql = []
+        for (const hex of hexagons) {
+          let hexValues = []
+          Object.entries(hex).forEach(([key, value]) => {
+            let valueText = null
+            if (value === null) {
+              valueText = 'null'
+            } else {
+              if (typeof value === 'string') {
+                valueText = '"' + value + '"'
+              } else valueText = value
+            }
+            hexValues.push(valueText)
+          })
+          var hexValuesString = hexValues.join(', ')
+          var valuesAndSqlSingleHex = `INSERT INTO ${tableName} (${tableFieldsNamesString}) VALUES (${hexValuesString})`
+          valuesSql.push(valuesAndSqlSingleHex)
+        }
+        // console.log('CHUNK TIME -------------------------------------')
+        // let timeEnd = process.hrtime(timeStart)
+        // console.info(
+        //   'Execution time (hr): %ds %dms',
+        //   timeEnd[0],
+        //   timeEnd[1] / 1000000
+        // )
+        return valuesSql
+      },
+      new batch({ batchSize: batchSizeInsert }),
+    ])
+    await pipeline.on('data', (data) => {
+      data.forEach(async (query, i) => {
+        try {
+          await dbins.run(query, [])
+          console.log('Insert finished ' + i)
+        } catch (error) {
+          console.log(error)
+        }
+      })
+    })
+    await pipeline.on('end', async () => {
+      // write to file
+      let fields = Object.keys(statistics[0])
+      const opts = { fields }
+      try {
+        const parser = new Parser(opts)
+        const csv = parser.parse(statistics)
+        fs.writeFileSync('./files/stat/stat.csv', csv)
+      } catch (err) {
+        console.error(err)
+      }
 
-    //   // database
-    //   try {
-    //     await dbins.close()
-    //     h3toGeoJsonFile(databaseUrl, tableName, convertedJSONFolder)
-    //   } catch (error) {
-    //     console.log(error)
-    //   }
-    //   console.log('Database is closed')
-    //   return true
-    // })
+      // database
+      try {
+        await dbins.close()
+        h3toGeoJsonFile(databaseUrl, tableName, convertedJSONFolder)
+      } catch (error) {
+        console.log(error)
+      }
+      console.log('Database is closed')
+      return true
+    })
   })
 }
 
@@ -274,7 +274,7 @@ function convertPolygonFeatureToH3indexes(
   const resolutionInteger = parseInt(resolution)
   const polygonH3indexes = polyfill(polygonCoordinates, resolutionInteger, true)
   // statistics function
-  stat(fid + '-' + 0, feature.value.geometry.coordinates)
+  // stat(fid + '-' + 0, feature.value.geometry.coordinates)
   // loop hexagons inside feature to add attributes
   const polygonH3indexesAttributes = polygonH3indexes.map((hexIndex) => {
     let H3indexAttributes = { H3INDEX: hexIndex, FID: fid + 1 }
@@ -301,7 +301,7 @@ function convertMultiPolygonFeatureToH3indexes(
   const h3indexesArrayNested = polygons.map((polygon, index) => {
     const polygonH3indexes = polyfill(polygon, resolutionInteger, true)
     // statistics function
-    stat(fid + '-' + index, polygon)
+    // stat(fid + '-' + index, polygon)
     return polygonH3indexes
   })
   const h3indexesArrayNestedNotEmpty = h3indexesArrayNested.filter((item) => {
